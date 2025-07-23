@@ -1,12 +1,9 @@
 streamlit
 requests
 PyPDF2
-langchain==0.2.11            # Keep core langchain for stability
-langchain-google-genai==2.1.8
-langchain-community==0.2.9
-langchain-core==0.2.71       # <--- CRITICAL FIX: Update to satisfy langchain-google-genai (>=0.3.68,<0.4.0).
-                             # 0.2.71 is the latest 0.2.x, but if that still conflicts, we might
-                             # need to jump to 0.3.x for core and potentially update langchain.
-                             # Let's try 0.2.71 first as it's within the 0.2.x range for langchain.
-langchain-text-splitters==0.2.1
+langchain==0.3.0             # Update main langchain to 0.3.x
+langchain-google-genai==2.1.8 # This version requires langchain-core >= 0.3.68
+langchain-community==0.3.0   # Align with 0.3.x
+langchain-core==0.3.71       # Align with 0.3.x, satisfies genai requirement
+langchain-text-splitters==0.3.0 # Align with 0.3.x
 chromadb
