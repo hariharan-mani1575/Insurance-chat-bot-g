@@ -1,7 +1,9 @@
 streamlit
 requests
 PyPDF2
-langchain
-langchain-google-genai # <--- THIS IS CRITICAL. MUST BE HYPHENATED
-langchain-community
+langchain==0.2.11 # Pinning a stable recent version of core langchain
+langchain-google-genai==0.0.18 # Pinning a stable recent version for Gemini
+langchain-community==0.2.9 # Pinning community package
+langchain-core==0.2.22 # Pinning core components
+langchain-text-splitters==0.2.1 # Pinning splitter
 chromadb
