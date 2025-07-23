@@ -1,0 +1,7 @@
+streamlit
+requests
+PyPDF2
+langchain
+langchain-google-genai
+langchain-community
+chromadb # ChromaDB is used by LangChain's Chroma vector store
