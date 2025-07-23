@@ -2,6 +2,6 @@ streamlit
 requests
 PyPDF2
 langchain
-langchain-google-genai
+langchain-google-genai # <--- THIS IS CRITICAL. MUST BE HYPHENATED
 langchain-community
-chromadb # ChromaDB is used by LangChain's Chroma vector store
+chromadb
