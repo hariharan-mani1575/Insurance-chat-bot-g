@@ -1,9 +1,9 @@
 streamlit
 requests
 PyPDF2
-langchain==0.3.0             # Aligned with overall 0.3.x strategy
+langchain==0.3.0
 langchain-google-genai==2.1.8
-langchain-community==0.2.9
-langchain-core==0.3.71       # <--- CRITICAL FIX: This satisfies >=0.3.68
-langchain-text-splitters==0.3.0 # Aligned with 0.3.x
+langchain-community==0.3.0   # <--- CRITICAL FIX: Update this to 0.3.x to match langchain-core
+langchain-core==0.3.71
+langchain-text-splitters==0.3.0
 chromadb
