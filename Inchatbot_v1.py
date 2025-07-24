@@ -19,7 +19,7 @@ except KeyError:
 
 # Initialize Gemini models directly
 CHAT_MODEL = genai.GenerativeModel('gemini-pro')
-EMBEDDING_MODEL = genai.GenerativeModel('embedding-001')
+# The EMBEDDING_MODEL variable is no longer needed as genai.embed_content is called directly.
 
 # --- Session State Initialization ---
 if "chat_display_history" not in st.session_state:
@@ -34,21 +34,29 @@ if 'summary_data' not in st.session_state:
 # --- Helper Functions for Document Processing (RAG) ---
 
 def get_text_chunks(text, chunk_size=1000, chunk_overlap=200):
-    """Simple text chunking based on character count."""
+    """
+    Splits text into chunks with a specified overlap.
+    This is a basic implementation; for production, consider more sophisticated splitters.
+    """
     chunks = []
-    current_chunk = ""
-    words = text.split() # Simple word split
-    for word in words:
-        if len(current_chunk) + len(word) + 1 <= chunk_size: # +1 for space
-            current_chunk += (word + " ").strip()
-        else:
-            chunks.append(current_chunk)
-            current_chunk = word + " "
-    if current_chunk:
-        chunks.append(current_chunk)
-    
-    # A more sophisticated chunking would handle overlap properly.
-    # For a hackathon, this simple split is often sufficient.
+    if not text:
+        return chunks
+
+    # A simple character-based chunking with overlap
+    start_idx = 0
+    while start_idx < len(text):
+        end_idx = start_idx + chunk_size
+        chunk = text[start_idx:end_idx]
+        chunks.append(chunk)
+        
+        if end_idx >= len(text):
+            break
+        
+        # Move start_idx back by chunk_overlap for the next chunk
+        start_idx += (chunk_size - chunk_overlap)
+        # Ensure start_idx doesn't go negative
+        start_idx = max(0, start_idx) 
+        
     return chunks
 
 def get_embeddings(texts):
@@ -56,8 +64,8 @@ def get_embeddings(texts):
     embeddings = []
     for text in texts:
         try:
-            # The genai.embed_content returns a dict with 'embedding' key
-            response = EMBEDDING_MODEL.embed_content(model="models/embedding-001", content=text)
+            # CORRECTED CALL: Call embed_content directly on the genai module
+            response = genai.embed_content(model="models/embedding-001", content=text)
             embeddings.append(response['embedding'])
         except Exception as e:
             st.error(f"Error generating embedding for text: {e}")
@@ -104,9 +112,9 @@ def process_document_for_rag(uploaded_file):
         
         # Clear chat history when new document is loaded
         st.session_state.chat_display_history = []
-        # No LangChain memory to clear directly here, just the display history
 
-# Function to call the Gemini API for summarization (from your original code, adapted)
+
+# Function to call the Gemini API for summarization
 def summarize_document_initial(document_text: str):
     """
     Summarizes the provided document text using the Gemini 2.0 Flash model,
@@ -137,12 +145,6 @@ def summarize_document_initial(document_text: str):
     ---
     """
     
-    # Use the CHAT_MODEL for the summarization task
-    # We still use requests directly for precise JSON schema control, as genai.GenerativeModel 
-    # might not directly support response_schema in the same way as the raw API payload.
-    # Alternatively, you could just instruct the model to output JSON and then parse it.
-
-    # Simpler approach: Just ask the model for JSON and parse it
     try:
         response = CHAT_MODEL.generate_content(
             prompt,
@@ -156,7 +158,8 @@ def summarize_document_initial(document_text: str):
         return json.loads(json_string)
     except Exception as e:
         st.error(f"Error during summarization: {e}")
-        st.json(response.to_dict() if 'response' in locals() else "No response object") # For debugging
+        # Show more detailed error info for debugging if needed
+        # st.json(response.to_dict() if 'response' in locals() else "No response object") 
         return None
 
 
@@ -376,7 +379,8 @@ if prompt := st.chat_input("Ask a question about the document..."):
             if st.session_state.faiss_index and st.session_state.document_chunks:
                 try:
                     # 1. Embed the user's query
-                    query_embedding_response = EMBEDDING_MODEL.embed_content(model="models/embedding-001", content=prompt)
+                    # CORRECTED CALL: Call embed_content directly on the genai module
+                    query_embedding_response = genai.embed_content(model="models/embedding-001", content=prompt)
                     query_embedding = np.array(query_embedding_response['embedding']).astype('float32').reshape(1, -1)
 
                     # 2. Search the FAISS index for relevant chunks
@@ -385,7 +389,8 @@ if prompt := st.chat_input("Ask a question about the document..."):
                     retrieved_chunks_content = []
                     source_info = []
                     for idx in I[0]:
-                        if idx < len(st.session_state.document_chunks):
+                        # Ensure index is within bounds of document_chunks
+                        if 0 <= idx < len(st.session_state.document_chunks):
                             chunk_content = st.session_state.document_chunks[idx]
                             retrieved_chunks_content.append(chunk_content)
                             source_info.append(f"Chunk Index {idx}") # Simple source info
@@ -394,27 +399,21 @@ if prompt := st.chat_input("Ask a question about the document..."):
 
                     # 3. Build the prompt with RAG context and chat history
                     # Prepare chat history for Gemini API (assuming simple 'user'/'model' roles)
-                    gemini_chat_history = []
-                    # Keep a window of recent history for LLM context, adapt as needed
-                    history_window_size = 5 # last 5 exchanges
+                    gemini_chat_history_for_rag = []
+                    # Keep a window of recent history for LLM context (e.g., last 5 exchanges)
+                    # Note: Gemini chat history typically alternates user/model roles
                     
-                    # Convert display history to Gemini API format and add to gemini_chat_history
-                    for msg in st.session_state.chat_display_history[-history_window_size:]:
+                    # Iterate through the display history to build Gemini-compatible history
+                    # It's crucial to ensure the prompt is the *last* user turn, and history alternates roles.
+                    history_for_model = []
+                    for msg in st.session_state.chat_display_history:
                         if msg["role"] == "user":
-                            gemini_chat_history.append({"role": "user", "parts": [{"text": msg["content"]}]})
+                            history_for_model.append({"role": "user", "parts": [{"text": msg["content"]}]})
                         elif msg["role"] == "assistant":
-                            gemini_chat_history.append({"role": "model", "parts": [{"text": msg["content"]}]})
+                            history_for_model.append({"role": "model", "parts": [{"text": msg["content"]}]})
                     
-                    # Ensure the last message in gemini_chat_history is from the user
-                    if gemini_chat_history and gemini_chat_history[-1]["role"] != "user":
-                         # This should ideally not happen if 'prompt' is always the latest user input
-                         pass # handle if needed
-                    else: # Add the current user prompt if it's not already the last one
-                         gemini_chat_history.append({"role": "user", "parts": [{"text": prompt}]})
-
-
-                    # The actual prompt for the LLM
-                    rag_prompt = f"""
+                    # The RAG prompt itself
+                    rag_augmented_prompt = f"""
                     You are an AI assistant. Answer the user's question based ONLY on the provided document context.
                     If the answer is not found in the context, state that you cannot find the information.
 
@@ -426,32 +425,33 @@ if prompt := st.chat_input("Ask a question about the document..."):
                     User Question: {prompt}
                     """
                     
-                    # Create a chat session to maintain conversation context (if using chat models)
-                    # For a single request with full history, you can just pass 'contents' directly
+                    # Create a chat session with the accumulated history.
+                    # This will automatically handle adding the current message.
+                    # The `history` parameter takes a list of `Content` objects.
                     
-                    # Build the contents list for the API call
-                    final_contents = []
+                    # Use a fresh chat session for RAG queries to ensure context is fully re-evaluated
+                    # with the RAG prompt as the latest query, plus relevant past history.
+                    # Filter history to only include the *last* few turns before the current prompt
+                    # to manage token limits. Adjust `history_window_size` as needed.
+                    history_window_size = 5 # Number of previous user/model pairs to include
                     
-                    # Append history up to the current user prompt
-                    for msg in st.session_state.chat_display_history:
-                        if msg["role"] == "user":
-                            final_contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
-                        elif msg["role"] == "assistant":
-                            final_contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
+                    # Ensure history is correctly formatted as alternating user/model roles
+                    # The `history` parameter for start_chat expects a list of Content objects,
+                    # which are essentially dicts with 'role' and 'parts'.
+                    
+                    # Let's rebuild the history properly for the chat session
+                    cleaned_history_for_gemini = []
+                    for i in range(len(st.session_state.chat_display_history)):
+                        msg = st.session_state.chat_display_history[i]
+                        if i == len(st.session_state.chat_display_history) - 1 and msg["role"] == "user":
+                            # This is the current user prompt, we'll send it separately
+                            break 
+                        cleaned_history_for_gemini.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
 
-                    # Replace the *last* user message (which is 'prompt') with the RAG-augmented prompt
-                    # Or, more robustly, append a new user message containing the RAG prompt
+                    chat_session = CHAT_MODEL.start_chat(history=cleaned_history_for_gemini)
                     
-                    # This is simpler and avoids complex history manipulation:
-                    # Treat the RAG prompt as the *current* user input to the model for this turn
-                    
-                    # The generate_content method for the model takes a list of Content objects
-                    # For a simple turn, we can send just the rag_prompt.
-                    # For a chat session with history, we typically use chat.send_message.
-                    # Let's adjust to use chat.send_message for proper multi-turn context
-                    
-                    chat_session = CHAT_MODEL.start_chat(history=gemini_chat_history[:-1]) # Start with history excluding current prompt
-                    response = chat_session.send_message(rag_prompt)
+                    # Send the RAG-augmented prompt as the current message
+                    response = chat_session.send_message(rag_augmented_prompt)
                     ai_response = response.text
                     
                     if source_info:
@@ -464,16 +464,16 @@ if prompt := st.chat_input("Ask a question about the document..."):
                 # If no document is processed for RAG, allow general chat
                 try:
                     # Prepare chat history for Gemini API for general chat
-                    gemini_chat_history = []
-                    history_window_size = 5
-                    for msg in st.session_state.chat_display_history[-history_window_size:]:
-                        if msg["role"] == "user":
-                            gemini_chat_history.append({"role": "user", "parts": [{"text": msg["content"]}]})
-                        elif msg["role"] == "assistant":
-                            gemini_chat_history.append({"role": "model", "parts": [{"text": msg["content"]}]})
+                    # We are essentially doing the same history building as above
+                    cleaned_history_for_gemini = []
+                    for i in range(len(st.session_state.chat_display_history)):
+                        msg = st.session_state.chat_display_history[i]
+                        if i == len(st.session_state.chat_display_history) - 1 and msg["role"] == "user":
+                            break
+                        cleaned_history_for_gemini.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
                     
-                    chat_session = CHAT_MODEL.start_chat(history=gemini_chat_history[:-1]) # Exclude current prompt
-                    response = chat_session.send_message(prompt)
+                    chat_session = CHAT_MODEL.start_chat(history=cleaned_history_for_gemini)
+                    response = chat_session.send_message(prompt) # Send the original prompt
                     ai_response = response.text
 
                 except Exception as e:
