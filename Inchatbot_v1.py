@@ -17,17 +17,23 @@ except KeyError:
     st.error("Gemini API key not found. Please set it in Streamlit secrets.")
     st.stop() # Stop the app if API key is missing
 
-# Initialize Gemini models directly
-CHAT_MODEL = genai.GenerativeModel('gemini-pro')
-# The EMBEDDING_MODEL variable is no longer needed as genai.embed_content is called directly.
+# Initialize Gemini models directly with specific names
+# 'gemini-1.5-flash' is often the most recommended balance of speed and capability for chat.
+CHAT_MODEL = genai.GenerativeModel('gemini-1.5-flash')
+# 'models/text-embedding-004' is the latest recommended model for embeddings.
+EMBEDDING_MODEL_NAME = "models/text-embedding-004"
 
 # --- Session State Initialization ---
+# This stores messages for displaying in the UI
 if "chat_display_history" not in st.session_state:
     st.session_state.chat_display_history = []
+# This stores original text chunks from the uploaded document for RAG
 if "document_chunks" not in st.session_state:
-    st.session_state.document_chunks = [] # Stores original text chunks
+    st.session_state.document_chunks = []
+# This stores the FAISS index for efficient similarity search
 if "faiss_index" not in st.session_state:
     st.session_state.faiss_index = None
+# This stores the summary data from the initial summarization
 if 'summary_data' not in st.session_state:
     st.session_state['summary_data'] = None
 
@@ -36,13 +42,14 @@ if 'summary_data' not in st.session_state:
 def get_text_chunks(text, chunk_size=1000, chunk_overlap=200):
     """
     Splits text into chunks with a specified overlap.
-    This is a basic implementation; for production, consider more sophisticated splitters.
+    This is a basic implementation; for production, consider more sophisticated splitters
+    like those from NLTK or SpaCy, or a dedicated text splitter library.
     """
     chunks = []
     if not text:
         return chunks
 
-    # A simple character-based chunking with overlap
+    # Simple character-based chunking with overlap
     start_idx = 0
     while start_idx < len(text):
         end_idx = start_idx + chunk_size
@@ -53,28 +60,32 @@ def get_text_chunks(text, chunk_size=1000, chunk_overlap=200):
             break
         
         # Move start_idx back by chunk_overlap for the next chunk
-        start_idx += (chunk_size - chunk_overlap)
         # Ensure start_idx doesn't go negative
+        start_idx += (chunk_size - chunk_overlap)
         start_idx = max(0, start_idx) 
         
     return chunks
 
 def get_embeddings(texts):
-    """Generates embeddings for a list of texts using Gemini Embedding model."""
+    """
+    Generates embeddings for a list of texts using the specified Gemini Embedding model.
+    Handles potential errors during embedding generation.
+    """
     embeddings = []
     for text in texts:
         try:
-            # CORRECTED CALL: Call embed_content directly on the genai module
-            response = genai.embed_content(model="models/embedding-001", content=text)
+            # Call embed_content directly on the genai module
+            response = genai.embed_content(model=EMBEDDING_MODEL_NAME, content=text)
             embeddings.append(response['embedding'])
         except Exception as e:
             st.error(f"Error generating embedding for text: {e}")
-            embeddings.append(None) # Append None to maintain list length
-    return [e for e in embeddings if e is not None] # Filter out failures
+            embeddings.append(None) # Append None to maintain list length for FAISS if needed
+    return [e for e in embeddings if e is not None] # Filter out any failed embeddings
 
 def process_document_for_rag(uploaded_file):
     """
-    Extracts text, chunks it, generates embeddings, and creates a FAISS index.
+    Extracts text from the uploaded document, chunks it, generates embeddings,
+    and creates a FAISS index for efficient similarity search.
     """
     with st.spinner("Processing document for Q&A..."):
         file_content = None
@@ -92,32 +103,32 @@ def process_document_for_rag(uploaded_file):
 
         st.info("Text extracted. Chunking and embedding...")
         chunks = get_text_chunks(file_content)
-        st.session_state.document_chunks = chunks # Store original chunks
+        st.session_state.document_chunks = chunks # Store original chunks for retrieval
 
         embeddings_list = get_embeddings(chunks)
         if not embeddings_list:
-            st.error("Failed to generate any embeddings from the document.")
+            st.error("Failed to generate any embeddings from the document. Q&A will not be enabled.")
             return
 
-        # Convert to numpy array
+        # Convert embeddings to a NumPy array with float32 type, required by FAISS
         embeddings_np = np.array(embeddings_list).astype('float32')
 
-        # Create a FAISS index
-        dimension = embeddings_np.shape[1]
-        faiss_index = faiss.IndexFlatL2(dimension) # L2 distance for similarity
-        faiss_index.add(embeddings_np)
+        # Create a FAISS index: IndexFlatL2 uses L2 (Euclidean) distance for similarity search
+        dimension = embeddings_np.shape[1] # Dimension of the embeddings
+        faiss_index = faiss.IndexFlatL2(dimension)
+        faiss_index.add(embeddings_np) # Add the embeddings to the index
         
         st.session_state.faiss_index = faiss_index
         st.success("Document processed and ready for questions!")
         
-        # Clear chat history when new document is loaded
+        # Clear existing chat history when a new document is loaded to avoid confusion
         st.session_state.chat_display_history = []
 
 
-# Function to call the Gemini API for summarization
+# Function to call the Gemini API for initial document summarization
 def summarize_document_initial(document_text: str):
     """
-    Summarizes the provided document text using the Gemini 2.0 Flash model,
+    Summarizes the provided document text using the CHAT_MODEL (gemini-1.5-flash),
     extracting coverages, exclusions, and policy details in a structured JSON format.
     """
     st.info("Analyzing document and generating summary...")
@@ -146,6 +157,7 @@ def summarize_document_initial(document_text: str):
     """
     
     try:
+        # Use the CHAT_MODEL to generate content, requesting JSON format
         response = CHAT_MODEL.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
@@ -153,20 +165,23 @@ def summarize_document_initial(document_text: str):
             )
         )
         json_string = response.text
+        # Models might wrap JSON in markdown code blocks; remove them if present
         if json_string.startswith("```json") and json_string.endswith("```"):
             json_string = json_string[7:-3].strip()
         return json.loads(json_string)
     except Exception as e:
         st.error(f"Error during summarization: {e}")
-        # Show more detailed error info for debugging if needed
-        # st.json(response.to_dict() if 'response' in locals() else "No response object") 
+        # For debugging, you might want to print the raw response text if available
+        # if 'response' in locals() and hasattr(response, 'text'):
+        #     st.text(f"Raw model response: {response.text}")
         return None
 
 
-# Function to extract text from PDF files
+# Function to extract text from PDF files using PyPDF2
 def extract_text_from_pdf(uploaded_file):
     """
-    Extracts text content from an uploaded PDF file.
+    Extracts text content from an uploaded PDF file using PyPDF2.
+    Adds a newline character between pages for better readability.
     """
     try:
         pdf_reader = PyPDF2.PdfReader(uploaded_file)
@@ -174,15 +189,16 @@ def extract_text_from_pdf(uploaded_file):
         for page_num in range(len(pdf_reader.pages)):
             page_text = pdf_reader.pages[page_num].extract_text()
             if page_text: # Ensure text is not None or empty
-                text += page_text + "\n" # Add newline for better readability between pages
+                text += page_text + "\n" # Add newline for better separation between pages
         return text
     except Exception as e:
         st.error(f"Error reading PDF file: {e}")
         return None
 
-# --- Streamlit UI ---
+# --- Streamlit UI Layout and Styling ---
 st.set_page_config(page_title="Insurance Document AI Assistant", layout="centered")
 
+# Custom CSS for styling the Streamlit app
 st.markdown(
     """
     <style>
@@ -196,6 +212,7 @@ st.markdown(
         text-align: center;
         margin-bottom: 30px;
     }
+    /* Style for file uploader button */
     .stFileUploader > div > button {
         background-color: #4CAF50; /* Green */
         color: white;
@@ -209,6 +226,7 @@ st.markdown(
     .stFileUploader > div > button:hover {
         background-color: #45a049;
     }
+    /* Style for general Streamlit buttons */
     .stButton > button {
         background-color: #1e3a8a; /* Dark blue */
         color: white;
@@ -218,12 +236,13 @@ st.markdown(
         border: none;
         cursor: pointer;
         transition: background-color 0.3s ease;
-        display: block;
-        margin: 20px auto;
+        display: block; /* Make buttons block-level for centering */
+        margin: 20px auto; /* Center buttons horizontally */
     }
     .stButton > button:hover {
         background-color: #15306b;
     }
+    /* Styling for the summary output section */
     .summary-section {
         background-color: #ffffff;
         padding: 20px;
@@ -246,6 +265,7 @@ st.markdown(
         margin-bottom: 8px;
         color: #333;
     }
+    /* Styling for policy details table */
     .policy-details-table {
         width: 100%;
         border-collapse: collapse;
@@ -268,7 +288,7 @@ st.markdown(
 st.title("📄 Insurance Document AI Assistant")
 st.write("Upload your insurance document (text file or PDF) to get a summary and ask questions.")
 
-# --- Sidebar for Document Upload and Initial Summary ---
+# --- Sidebar for Document Upload and Initial Summary/Q&A Enablement ---
 with st.sidebar:
     st.header("Document Operations")
     uploaded_file_sidebar = st.file_uploader("Choose a document (.txt or .pdf)", type=["txt", "pdf"], key="sidebar_uploader")
@@ -288,6 +308,7 @@ with st.sidebar:
             with st.expander("View Document Content"):
                 st.text_area("Content", file_content_sidebar, height=200, disabled=True)
 
+            # Button to trigger initial summarization
             if st.button("Generate Summary"):
                 if file_content_sidebar:
                     with st.spinner("Generating initial summary..."):
@@ -300,6 +321,7 @@ with st.sidebar:
                 else:
                     st.warning("Could not extract content from the uploaded document.")
 
+            # Button to enable Q&A (RAG) on the document
             if st.button("Enable Q&A on Document"):
                 if file_content_sidebar:
                     process_document_for_rag(uploaded_file_sidebar)
@@ -309,9 +331,9 @@ with st.sidebar:
         st.info("Upload a .txt or .pdf file to begin.")
 
 
-# --- Main Content Area ---
+# --- Main Content Area: Display Summary (if available) ---
 
-# Display initial summary if available
+# Display initial summary report if it has been generated
 if st.session_state.get('summary_data'):
     st.markdown('<div class="summary-section">', unsafe_allow_html=True)
     st.subheader("Initial Summary Report")
@@ -365,7 +387,7 @@ for message in st.session_state.chat_display_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Accept user input
+# Accept user input for chat
 if prompt := st.chat_input("Ask a question about the document..."):
     # Add user message to chat display history
     st.session_state.chat_display_history.append({"role": "user", "content": prompt})
@@ -376,43 +398,40 @@ if prompt := st.chat_input("Ask a question about the document..."):
         with st.spinner("Thinking..."):
             ai_response = "I'm sorry, I cannot answer questions about a document until one is processed for Q&A. Please upload a document and click 'Enable Q&A on Document' in the sidebar."
 
+            # Check if RAG is enabled (FAISS index and chunks are available)
             if st.session_state.faiss_index and st.session_state.document_chunks:
                 try:
-                    # 1. Embed the user's query
-                    # CORRECTED CALL: Call embed_content directly on the genai module
-                    query_embedding_response = genai.embed_content(model="models/embedding-001", content=prompt)
+                    # 1. Embed the user's query for similarity search
+                    query_embedding_response = genai.embed_content(model=EMBEDDING_MODEL_NAME, content=prompt)
                     query_embedding = np.array(query_embedding_response['embedding']).astype('float32').reshape(1, -1)
 
-                    # 2. Search the FAISS index for relevant chunks
-                    D, I = st.session_state.faiss_index.search(query_embedding, k=3) # k=3 for top 3 results
+                    # 2. Search the FAISS index for the most relevant document chunks
+                    D, I = st.session_state.faiss_index.search(query_embedding, k=3) # Retrieve top 3 relevant chunks
                     
                     retrieved_chunks_content = []
                     source_info = []
                     for idx in I[0]:
-                        # Ensure index is within bounds of document_chunks
+                        # Ensure the retrieved index is within the bounds of stored chunks
                         if 0 <= idx < len(st.session_state.document_chunks):
                             chunk_content = st.session_state.document_chunks[idx]
                             retrieved_chunks_content.append(chunk_content)
-                            source_info.append(f"Chunk Index {idx}") # Simple source info
+                            source_info.append(f"Chunk Index {idx}") # Simple source info for the user
 
-                    context = "\n\n".join(retrieved_chunks_content)
+                    context = "\n\n".join(retrieved_chunks_content) # Combine retrieved chunks into context string
 
-                    # 3. Build the prompt with RAG context and chat history
-                    # Prepare chat history for Gemini API (assuming simple 'user'/'model' roles)
-                    gemini_chat_history_for_rag = []
-                    # Keep a window of recent history for LLM context (e.g., last 5 exchanges)
-                    # Note: Gemini chat history typically alternates user/model roles
-                    
+                    # 3. Build the prompt with RAG context and chat history for the LLM
+                    # Prepare chat history for Gemini API. Gemini chat history expects alternating user/model roles.
+                    cleaned_history_for_gemini = []
                     # Iterate through the display history to build Gemini-compatible history
-                    # It's crucial to ensure the prompt is the *last* user turn, and history alternates roles.
-                    history_for_model = []
-                    for msg in st.session_state.chat_display_history:
-                        if msg["role"] == "user":
-                            history_for_model.append({"role": "user", "parts": [{"text": msg["content"]}]})
-                        elif msg["role"] == "assistant":
-                            history_for_model.append({"role": "model", "parts": [{"text": msg["content"]}]})
-                    
-                    # The RAG prompt itself
+                    for i in range(len(st.session_state.chat_display_history)):
+                        msg = st.session_state.chat_display_history[i]
+                        # The *last* message in chat_display_history is the current user prompt,
+                        # which will be sent as part of the `send_message` call, not in `history`.
+                        if i == len(st.session_state.chat_display_history) - 1 and msg["role"] == "user":
+                            break 
+                        cleaned_history_for_gemini.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
+
+                    # The RAG-augmented prompt, instructing the AI to use the context
                     rag_augmented_prompt = f"""
                     You are an AI assistant. Answer the user's question based ONLY on the provided document context.
                     If the answer is not found in the context, state that you cannot find the information.
@@ -425,35 +444,14 @@ if prompt := st.chat_input("Ask a question about the document..."):
                     User Question: {prompt}
                     """
                     
-                    # Create a chat session with the accumulated history.
-                    # This will automatically handle adding the current message.
-                    # The `history` parameter takes a list of `Content` objects.
-                    
-                    # Use a fresh chat session for RAG queries to ensure context is fully re-evaluated
-                    # with the RAG prompt as the latest query, plus relevant past history.
-                    # Filter history to only include the *last* few turns before the current prompt
-                    # to manage token limits. Adjust `history_window_size` as needed.
-                    history_window_size = 5 # Number of previous user/model pairs to include
-                    
-                    # Ensure history is correctly formatted as alternating user/model roles
-                    # The `history` parameter for start_chat expects a list of Content objects,
-                    # which are essentially dicts with 'role' and 'parts'.
-                    
-                    # Let's rebuild the history properly for the chat session
-                    cleaned_history_for_gemini = []
-                    for i in range(len(st.session_state.chat_display_history)):
-                        msg = st.session_state.chat_display_history[i]
-                        if i == len(st.session_state.chat_display_history) - 1 and msg["role"] == "user":
-                            # This is the current user prompt, we'll send it separately
-                            break 
-                        cleaned_history_for_gemini.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
-
+                    # Start a chat session with the accumulated history
                     chat_session = CHAT_MODEL.start_chat(history=cleaned_history_for_gemini)
                     
-                    # Send the RAG-augmented prompt as the current message
+                    # Send the RAG-augmented prompt as the current message in the chat session
                     response = chat_session.send_message(rag_augmented_prompt)
                     ai_response = response.text
                     
+                    # Append source information if available
                     if source_info:
                         ai_response += "\n\n---\n**Sources from Document:**\n" + "\n".join(source_info)
 
@@ -461,10 +459,9 @@ if prompt := st.chat_input("Ask a question about the document..."):
                     st.error(f"Error during Q&A: {e}")
                     ai_response = "An error occurred while trying to answer your question from the document. Please try again."
             else:
-                # If no document is processed for RAG, allow general chat
+                # If no document is processed for RAG, allow general chat using the CHAT_MODEL
                 try:
-                    # Prepare chat history for Gemini API for general chat
-                    # We are essentially doing the same history building as above
+                    # Prepare chat history for Gemini API for general chat (same logic as RAG path)
                     cleaned_history_for_gemini = []
                     for i in range(len(st.session_state.chat_display_history)):
                         msg = st.session_state.chat_display_history[i]
@@ -473,13 +470,14 @@ if prompt := st.chat_input("Ask a question about the document..."):
                         cleaned_history_for_gemini.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
                     
                     chat_session = CHAT_MODEL.start_chat(history=cleaned_history_for_gemini)
-                    response = chat_session.send_message(prompt) # Send the original prompt
+                    response = chat_session.send_message(prompt) # Send the original user prompt
                     ai_response = response.text
 
                 except Exception as e:
                     st.error(f"Error during general chat: {e}")
                     ai_response = "An error occurred during general conversation. Please try again."
 
+            # Display the AI's response in the chat interface
             st.markdown(ai_response)
-            # Add AI message to chat display history
+            # Add the AI's response to the display history for future turns
             st.session_state.chat_display_history.append({"role": "assistant", "content": ai_response})
